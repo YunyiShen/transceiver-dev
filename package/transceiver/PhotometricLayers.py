@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .util_layers import *
-from .Perceiver import PerceiverEncoder, PerceiverDecoder, PerceiverEncoder2stages
+from .Perceiver import PerceiverEncoder, PerceiverDecoder, PerceiverEncoder2stages, PerceiverDecoder2stages
 
 
 
@@ -114,6 +114,61 @@ class photometricTransceiverDecoder(nn.Module):
         x = self.time_band_embd(time, band)
         return self.decoder(bottleneck, x, None, mask).squeeze(-1)
          
+class photometricTransceiverDecoder2stages(nn.Module):
+    def __init__(self, 
+                 bottleneck_dim,
+                 num_bands,
+                 hidden_len = 256,
+                 model_dim = 32,
+                 num_heads = 4, 
+                 ff_dim = 32, 
+                 num_layers = 4,
+                 dropout=0.1, 
+                 donotmask=False,
+                 selfattn=False
+                 ):
+        '''
+        A transformer to decode something (latent) into photometry given time and band
+        Args:
+            bottleneck_dim: dimension of the thing you want to decode, should be a tensor [batch_size, bottleneck_length, bottleneck_dim]
+            num_bands: number of bands, currently embedded as class
+            model_dim: dimension the transformer should operate 
+            num_heads: number of heads in the multiheaded attention
+            ff_dim: dimension of the MLP hidden layer in transformer
+            num_layers: number of transformer blocks
+            dropout: drop out in transformer
+            donotmask: should we ignore the mask when decoding?
+            selfattn: if we want self attention to the latent
+        '''
+        super(photometricTransceiverDecoder2stages, self).__init__()
+        self.decoder = PerceiverDecoder2stages(
+            bottleneck_dim,
+                 num_bands,
+                 hidden_len,
+                 model_dim, 
+                 num_heads, 
+                 ff_dim, 
+                 num_layers,
+                 dropout, 
+                 selfattn
+        )
+        self.time_band_embd = timebandEmbedding(num_bands, model_dim)
+        self.donotmask = donotmask
+    
+    def forward(self, time, band, bottleneck, mask=None):
+        '''
+        Args:
+            time: time of the photometry being taken [batch_size, photometry_length]
+            band: band of the photometry being taken [batch_size, photometry_length]
+            bottleneck: bottleneck from the encoder [batch_size, bottleneck_length, bottleneck_dim]
+        Return:
+            flux of the decoded photometry, [batch_size, photometry_length]
+        '''
+        if self.donotmask:
+            mask = None
+        x = self.time_band_embd(time, band)
+        return self.decoder(bottleneck, x, None, mask).squeeze(-1)
+
 
 # this will generate bottleneck, in encoder
 class photometricTransceiverEncoder(nn.Module):
@@ -171,6 +226,8 @@ class photometricTransceiverEncoder(nn.Module):
         
         x = self.photometry_embd(flux, time, band)
         return self.encoder(x, mask) 
+    
+    
         
 class photometricTransceiverEncoder2stages(nn.Module):
     def __init__(self,
