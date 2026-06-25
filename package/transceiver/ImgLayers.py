@@ -18,7 +18,11 @@ class HostImgTransceiverEncoder(nn.Module):
                     num_layers = 4,
                     dropout=0.1, 
                     selfattn=False, 
-                    sincosin = True):
+                    sincosin = True,
+                    pos_encoding="sinusoidal",
+                    pos_encoding_kwargs=None,
+                    event_pos_encoding="sinusoidal_mlp",
+                    event_pos_encoding_kwargs=None):
         '''
         Encoder for host image
         Arg:
@@ -40,12 +44,19 @@ class HostImgTransceiverEncoder(nn.Module):
         self.focal_loc = focal_loc
         self.model_dim = model_dim
         self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, model_dim)
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
         if sincosin:
-            self.pos_embed = SinusoidalPositionalEmbedding2D(model_dim, img_size//patch_size,img_size//patch_size)
+            self.pos_embed = build_2d_positional_embedding(
+                model_dim, img_size//patch_size, img_size//patch_size,
+                pos_encoding, **pos_encoding_kwargs
+            )
         else:
             self.pos_embed = nn.Parameter(torch.zeros(1, self.patch_embed.num_patches, model_dim))
         if self.focal_loc:
-            self.eventloc_embd = SinusoidalMLPPositionalEmbedding(model_dim)
+            event_pos_encoding_kwargs = event_pos_encoding_kwargs or {}
+            self.eventloc_embd = build_positional_embedding(
+                model_dim, event_pos_encoding, **event_pos_encoding_kwargs
+            )
         else:
             self.eventloc_embd = None
 
@@ -77,7 +88,10 @@ class HostImgTransceiverEncoder(nn.Module):
         '''
         image_embd = self.patch_embed(image)  # [B, N, D]
         #breakpoint()
-        image_embd = image_embd + self.pos_embed()  # [B, N, D]
+        if isinstance(self.pos_embed, nn.Parameter):
+            image_embd = image_embd + self.pos_embed
+        else:
+            image_embd = image_embd + self.pos_embed()  # [B, N, D]
         if self.focal_loc:
             if event_loc is not None:
                 event_loc_embd = self.eventloc_embd(event_loc) # [B, 2, D]
@@ -100,7 +114,9 @@ class HostImgTransceiverDecoder(nn.Module):
                 ff_dim = 32, 
                 num_layers = 4,
                 dropout=0.1, 
-                selfattn=False):
+                selfattn=False,
+                pos_encoding="sinusoidal",
+                pos_encoding_kwargs=None):
         '''
         Decoder directly to pixel
         Arg:
@@ -117,7 +133,10 @@ class HostImgTransceiverDecoder(nn.Module):
         super().__init__()
         self.img_size = img_size
         self.in_channels = in_channels
-        self.init_img_embd = SinusoidalPositionalEmbedding2D(model_dim, img_size, img_size) #nn.Parameter(torch.randn(img_size ** 2, model_dim))
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
+        self.init_img_embd = build_2d_positional_embedding(
+            model_dim, img_size, img_size, pos_encoding, **pos_encoding_kwargs
+        )
 
         '''
         self.contextfc = MLP(bottleneck_dim, model_dim, [model_dim])
@@ -169,7 +188,9 @@ class HostImgTransceiverDecoderHybrid(nn.Module):
                  ff_dim=128,
                  num_layers=4,
                  dropout=0.1,
-                 selfattn=False
+                 selfattn=False,
+                 pos_encoding="sinusoidal",
+                 pos_encoding_kwargs=None
                  ):
         '''
         Decoder directly to patch then refine with a CNN at the end
@@ -197,7 +218,10 @@ class HostImgTransceiverDecoderHybrid(nn.Module):
         
 
         # positional embedding for patch tokens
-        self.init_img_embd = SinusoidalPositionalEmbedding2D(model_dim, self.grid_size, self.grid_size)
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
+        self.init_img_embd = build_2d_positional_embedding(
+            model_dim, self.grid_size, self.grid_size, pos_encoding, **pos_encoding_kwargs
+        )
 
 
         '''

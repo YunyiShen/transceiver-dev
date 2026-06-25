@@ -12,13 +12,16 @@ class wavelengthphaseEmbedding(nn.Module):
     '''
     sinusoidal embedding for wavelength and phase
     '''
-    def __init__(self, model_dim = 32):
+    def __init__(self, model_dim = 32, pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None, fourier=False):
         '''
         Arg model_dim: model dimension
         '''
         super(wavelengthphaseEmbedding, self).__init__()
-        self.phase_embd_layer = SinusoidalMLPPositionalEmbedding(model_dim)# expand phase to bottleneck
-        self.wavelength_embd_layer = SinusoidalMLPPositionalEmbedding(model_dim)
+        pos_encoding = resolve_positional_kind(pos_encoding, fourier)
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
+        self.phase_embd_layer = build_positional_embedding(model_dim, pos_encoding, **pos_encoding_kwargs)
+        self.wavelength_embd_layer = build_positional_embedding(model_dim, pos_encoding, **pos_encoding_kwargs)
     
     def forward(self, wavelength, phase):
         '''
@@ -30,7 +33,9 @@ class wavelengthphaseEmbedding(nn.Module):
 
 
 class spectraEmbedding(nn.Module):
-    def __init__(self, model_dim = 32, concat = False):
+    def __init__(self, model_dim = 32, concat = False,
+                 pos_encoding="sinusoidal_mlp", pos_encoding_kwargs=None,
+                 fourier=False):
         '''
         spectra embedding, sinusoidal-MLP embedding for phase and added to 
             linear embedding of flux, the append in seq space of phase
@@ -38,9 +43,11 @@ class spectraEmbedding(nn.Module):
             concat: if we use concatenate then projection to combine flux and wavelength
         '''
         super(spectraEmbedding, self).__init__()
-        self.phase_embd_layer = SinusoidalMLPPositionalEmbedding(model_dim)# expand phase to bottleneck
+        pos_encoding = resolve_positional_kind(pos_encoding, fourier)
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
+        self.phase_embd_layer = build_positional_embedding(model_dim, pos_encoding, **pos_encoding_kwargs)
         self.concat = concat
-        self.wavelength_embd_layer = SinusoidalMLPPositionalEmbedding(model_dim)# expand wavelength to bottleneck
+        self.wavelength_embd_layer = build_positional_embedding(model_dim, pos_encoding, **pos_encoding_kwargs)
         self.flux_embd = nn.Linear(1, model_dim)
         if concat:
             self.spfc = MLP(2*model_dim, model_dim, [model_dim])
@@ -69,7 +76,10 @@ class spectraTransceiverDecoder(nn.Module):
                  ff_dim = 32, 
                  num_layers = 4,
                  dropout=0.1, 
-                 selfattn=False
+                 selfattn=False,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False
                  ):
         '''
         A transformer to decode something (latent) into spectra given time and band
@@ -94,7 +104,9 @@ class spectraTransceiverDecoder(nn.Module):
                  dropout, 
                  selfattn
         )
-        self.wavelengthphaseembd = wavelengthphaseEmbedding(model_dim)
+        self.wavelengthphaseembd = wavelengthphaseEmbedding(
+            model_dim, pos_encoding, pos_encoding_kwargs, fourier
+        )
     
     def forward(self, wavelength, phase, bottleneck, mask=None):
         '''
@@ -118,7 +130,10 @@ class spectraTransceiverDecoder2stages(nn.Module):
                  ff_dim = 32, 
                  num_layers = 4,
                  dropout=0.1, 
-                 selfattn=False
+                 selfattn=False,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False
                  ):
         '''
         A transformer to decode something (latent) into spectra given time and band
@@ -144,7 +159,9 @@ class spectraTransceiverDecoder2stages(nn.Module):
                  dropout, 
                  selfattn
         )
-        self.wavelengthphaseembd = wavelengthphaseEmbedding(model_dim)
+        self.wavelengthphaseembd = wavelengthphaseEmbedding(
+            model_dim, pos_encoding, pos_encoding_kwargs, fourier
+        )
     
     def forward(self, wavelength, phase, bottleneck, mask=None):
         '''
@@ -170,7 +187,10 @@ class spectraTransceiverEncoder(nn.Module):
                  ff_dim = 32, 
                  dropout = 0.1, 
                  selfattn = False, 
-                 concat = True):
+                 concat = True,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False):
         '''
         Transceiver encoder for spectra, with cross attention pooling
         Args:
@@ -195,7 +215,9 @@ class spectraTransceiverEncoder(nn.Module):
                  dropout, 
                  selfattn)
         
-        self.spectraEmbd = spectraEmbedding(model_dim, concat)
+        self.spectraEmbd = spectraEmbedding(
+            model_dim, concat, pos_encoding, pos_encoding_kwargs, fourier
+        )
 
     def forward(self, wavelength, flux, phase, mask=None):
         '''
@@ -224,7 +246,10 @@ class spectraTransceiverEncoder2stages(nn.Module):
                  ff_dim = 256, 
                  dropout = 0.1, 
                  selfattn = False, 
-                 concat = True):
+                 concat = True,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False):
         '''
         Transceiver encoder for spectra, with cross attention pooling
         Args:
@@ -249,7 +274,9 @@ class spectraTransceiverEncoder2stages(nn.Module):
                  dropout, 
                  selfattn)
         
-        self.spectraEmbd = spectraEmbedding(model_dim, concat)
+        self.spectraEmbd = spectraEmbedding(
+            model_dim, concat, pos_encoding, pos_encoding_kwargs, fourier
+        )
         self.model_dim = model_dim
         self.bottleneck_length = bottleneck_length
         self.bottleneck_dim = bottleneck_dim
@@ -272,6 +299,5 @@ class spectraTransceiverEncoder2stages(nn.Module):
            mask = torch.cat([mask, torch.zeros(mask.shape[0], 1).bool().to(mask.device) ], dim=1)
         x = self.encoder(x, mask)
         return x
-
 
 

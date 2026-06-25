@@ -10,9 +10,13 @@ from .Perceiver import PerceiverEncoder, PerceiverDecoder, PerceiverEncoder2stag
 # Transceivers for spectra data
 ###############################
 class timebandEmbedding(nn.Module):
-    def __init__(self, num_bands = 6, model_dim = 32):
+    def __init__(self, num_bands = 6, model_dim = 32,
+                 pos_encoding="sinusoidal_mlp", pos_encoding_kwargs=None,
+                 fourier=False):
         super(timebandEmbedding, self).__init__()
-        self.time_embd = SinusoidalMLPPositionalEmbedding(model_dim)
+        pos_encoding = resolve_positional_kind(pos_encoding, fourier)
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
+        self.time_embd = build_positional_embedding(model_dim, pos_encoding, **pos_encoding_kwargs)
         self.bandembd = nn.Embedding(num_bands, model_dim)
     
     def forward(self, time, band):
@@ -20,9 +24,13 @@ class timebandEmbedding(nn.Module):
 
 
 class photometryEmbeddingConcat(nn.Module):
-    def __init__(self, num_bands = 6, model_dim = 32):
+    def __init__(self, num_bands = 6, model_dim = 32,
+                 pos_encoding="sinusoidal_mlp", pos_encoding_kwargs=None,
+                 fourier=False):
         super(photometryEmbeddingConcat, self).__init__()
-        self.time_embd = SinusoidalMLPPositionalEmbedding(model_dim)
+        pos_encoding = resolve_positional_kind(pos_encoding, fourier)
+        pos_encoding_kwargs = pos_encoding_kwargs or {}
+        self.time_embd = build_positional_embedding(model_dim, pos_encoding, **pos_encoding_kwargs)
         self.bandembd = nn.Embedding(num_bands, model_dim)
         self.fluxfc = nn.Linear(1, model_dim)
         self.lcfc = MLP(model_dim * 3, model_dim, [model_dim])
@@ -41,9 +49,13 @@ class photometryEmbeddingConcat(nn.Module):
 
 
 class photometryEmbedding(nn.Module):
-    def __init__(self, num_bands = 6, model_dim = 32):
+    def __init__(self, num_bands = 6, model_dim = 32,
+                 pos_encoding="sinusoidal_mlp", pos_encoding_kwargs=None,
+                 fourier=False):
         super(photometryEmbedding, self).__init__()
-        self.time_band_embd = timebandEmbedding(num_bands, model_dim)
+        self.time_band_embd = timebandEmbedding(
+            num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+        )
         self.fluxfc = nn.Linear(1, model_dim)
 
     def forward(self, flux, time, band):
@@ -71,7 +83,10 @@ class photometricTransceiverDecoder(nn.Module):
                  num_layers = 4,
                  dropout=0.1, 
                  donotmask=False,
-                 selfattn=False
+                 selfattn=False,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False
                  ):
         '''
         A transformer to decode something (latent) into photometry given time and band
@@ -97,7 +112,9 @@ class photometricTransceiverDecoder(nn.Module):
                  dropout, 
                  selfattn
         )
-        self.time_band_embd = timebandEmbedding(num_bands, model_dim)
+        self.time_band_embd = timebandEmbedding(
+            num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+        )
         self.donotmask = donotmask
     
     def forward(self, time, band, bottleneck, mask=None):
@@ -125,7 +142,10 @@ class photometricTransceiverDecoder2stages(nn.Module):
                  num_layers = 4,
                  dropout=0.1, 
                  donotmask=False,
-                 selfattn=False
+                 selfattn=False,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False
                  ):
         '''
         A transformer to decode something (latent) into photometry given time and band
@@ -152,7 +172,9 @@ class photometricTransceiverDecoder2stages(nn.Module):
                  dropout, 
                  selfattn
         )
-        self.time_band_embd = timebandEmbedding(num_bands, model_dim)
+        self.time_band_embd = timebandEmbedding(
+            num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+        )
         self.donotmask = donotmask
     
     def forward(self, time, band, bottleneck, mask=None):
@@ -182,7 +204,10 @@ class photometricTransceiverEncoder(nn.Module):
                  num_layers = 4,
                  dropout=0.1,
                  selfattn=False, 
-                 concat = True):
+                 concat = True,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None,
+                 fourier=False):
         '''
         Transceiver encoder for photometry, with cross attention pooling
         Args:
@@ -208,9 +233,13 @@ class photometricTransceiverEncoder(nn.Module):
                  dropout, 
                  selfattn)
         if concat:
-            self.photometry_embd = photometryEmbeddingConcat(num_bands, model_dim)
+            self.photometry_embd = photometryEmbeddingConcat(
+                num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+            )
         else:
-            self.photometry_embd = photometryEmbedding(num_bands, model_dim)
+            self.photometry_embd = photometryEmbedding(
+                num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+            )
 
 
     def forward(self, flux, time, band, mask=None):
@@ -242,7 +271,9 @@ class photometricTransceiverEncoder2stages(nn.Module):
                  dropout=0.1,
                  selfattn=False, 
                  concat = True,
-                 fourier = False
+                 fourier = False,
+                 pos_encoding="sinusoidal_mlp",
+                 pos_encoding_kwargs=None
                  ):
         '''
         Transceiver encoder for photometry with two stage perceiver IO, for long sequences
@@ -270,9 +301,13 @@ class photometricTransceiverEncoder2stages(nn.Module):
                  dropout, 
                  selfattn)
         if concat:
-            self.photometry_embd = photometryEmbeddingConcat(num_bands, model_dim, fourier)
+            self.photometry_embd = photometryEmbeddingConcat(
+                num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+            )
         else:
-            self.photometry_embd = photometryEmbedding(num_bands, model_dim, fourier)
+            self.photometry_embd = photometryEmbedding(
+                num_bands, model_dim, pos_encoding, pos_encoding_kwargs, fourier
+            )
         self.model_dim = model_dim
         self.bottleneck_length = bottleneck_length
         self.bottleneck_dim = bottleneck_dim

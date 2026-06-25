@@ -99,6 +99,123 @@ class SinusoidalMLPPositionalEmbedding(nn.Module):
         return encoding
 
 
+class GaussianSplatPositionalEmbedding(nn.Module):
+    def __init__(self, dim=64, num_splats=None, coord_dim=1,
+                 coord_range=(-1.0, 1.0), sigma=None,
+                 learnable_centers=True, learnable_sigma=True,
+                 normalize=False, use_mlp=None):
+        '''
+        Gaussian splat positional encoding.
+
+        Each splat has a learned vector value. A coordinate is encoded as the
+        Gaussian-kernel-weighted sum of those vectors. This is useful for
+        continuous, irregularly sampled coordinates such as time, wavelength,
+        phase, or sky/image locations.
+
+        Args:
+            dim: output embedding dimension.
+            num_splats: number of Gaussian centers per coordinate dimension.
+            coord_dim: number of coordinate dimensions in x.
+            coord_range: tuple or per-dimension tensor/list of (min, max).
+            sigma: initial Gaussian width. Defaults to the center spacing.
+            learnable_centers: whether Gaussian centers are trainable.
+            learnable_sigma: whether Gaussian widths are trainable.
+            normalize: divide by the sum of kernel weights before returning.
+            use_mlp: deprecated and ignored; kept for old config compatibility.
+        '''
+        super().__init__()
+        self.dim = dim
+        self.coord_dim = coord_dim
+        self.num_splats = num_splats or dim
+        self.normalize = normalize
+
+        centers = self._init_centers(coord_range)
+        if learnable_centers:
+            self.centers = nn.Parameter(centers)
+        else:
+            self.register_buffer("centers", centers, persistent=False)
+
+        if sigma is None:
+            if self.num_splats > 1:
+                sigma = (centers[:, 1] - centers[:, 0]).abs().mean().item()
+            else:
+                sigma = 1.0
+        if sigma <= 0:
+            raise ValueError("sigma must be positive.")
+        if sigma > 20:
+            sigma_param = float(sigma)
+        else:
+            sigma_param = math.log(math.expm1(float(sigma)))
+        log_sigma = torch.full((coord_dim, self.num_splats), sigma_param)
+        if learnable_sigma:
+            self.log_sigma = nn.Parameter(log_sigma)
+        else:
+            self.register_buffer("log_sigma", log_sigma, persistent=False)
+
+        self.splat_weights = nn.Parameter(torch.empty(coord_dim, self.num_splats, dim))
+        nn.init.normal_(self.splat_weights, std=dim ** -0.5)
+
+    def _init_centers(self, coord_range):
+        range_tensor = torch.as_tensor(coord_range, dtype=torch.float32)
+        if range_tensor.ndim == 1:
+            if range_tensor.numel() != 2:
+                raise ValueError("coord_range must be (min, max) or shape [coord_dim, 2].")
+            range_tensor = range_tensor[None, :].repeat(self.coord_dim, 1)
+        if range_tensor.shape != (self.coord_dim, 2):
+            raise ValueError("coord_range must be (min, max) or shape [coord_dim, 2].")
+
+        centers = [
+            torch.linspace(range_tensor[i, 0], range_tensor[i, 1], self.num_splats)
+            for i in range(self.coord_dim)
+        ]
+        return torch.stack(centers, dim=0)
+
+    def forward(self, x):
+        # x: [batch_size, seq_len] or [batch_size, seq_len, coord_dim]
+        if x.dim() == 2:
+            x = x[:, :, None]
+        if x.shape[-1] != self.coord_dim:
+            raise ValueError(f"Expected coordinate dimension {self.coord_dim}, got {x.shape[-1]}.")
+
+        centers = self.centers.to(device=x.device, dtype=x.dtype)
+        sigma = F.softplus(self.log_sigma.to(device=x.device, dtype=x.dtype)) + 1e-6
+        delta = x[:, :, :, None] - centers[None, None, :, :]
+        splats = torch.exp(-0.5 * (delta / sigma[None, None, :, :]).pow(2))
+        weights = self.splat_weights.to(device=x.device, dtype=x.dtype)
+        encoding = torch.sum(splats[:, :, :, :, None] * weights[None, None, :, :, :], dim=(-3, -2))
+        if self.normalize:
+            norm = splats.sum(dim=(-2, -1)).clamp_min(1e-6)
+            encoding = encoding / norm[:, :, None]
+        return encoding
+
+
+def build_positional_embedding(dim=64, kind="sinusoidal_mlp", **kwargs):
+    '''
+    Factory for 1D/continuous positional encoders used by transceiver layers.
+    '''
+    if kind is None:
+        kind = "sinusoidal_mlp"
+    kind = kind.lower()
+    if kind in ["sinusoidal_mlp", "sincos_mlp", "mlp_sinusoidal"]:
+        return SinusoidalMLPPositionalEmbedding(dim)
+    if kind in ["sinusoidal", "sincos"]:
+        return SinusoidalPositionalEmbedding(dim)
+    if kind in ["learnable_fourier", "fourier"]:
+        return learnable_fourier_encoding(dim)
+    if kind in ["gaussian_splat", "gaussian", "splat"]:
+        return GaussianSplatPositionalEmbedding(dim, **kwargs)
+    raise ValueError(f"Unknown positional embedding kind: {kind}")
+
+
+def resolve_positional_kind(kind="sinusoidal_mlp", fourier=False):
+    if isinstance(kind, bool):
+        fourier = kind
+        kind = "sinusoidal_mlp"
+    if fourier:
+        return "learnable_fourier"
+    return kind
+
+
 class RelativePosition(nn.Module):
     '''
     relative positional encoding for discrete distances
@@ -353,6 +470,58 @@ class SinusoidalPositionalEmbedding2D(nn.Module):
             Tensor of shape (H*W, d_model): positional embeddings.
         """
         return self.pos_embed
+
+
+class GaussianSplatPositionalEmbedding2D(nn.Module):
+    def __init__(self, d_model: int, height: int, width: int,
+                 num_splats=None, coord_range=(-1.0, 1.0),
+                 sigma=None, learnable_centers=True,
+                 learnable_sigma=True, normalize=False, use_mlp=None):
+        """
+        Gaussian splat positional embedding for image/grid tokens.
+
+        Returns one embedding per grid cell, using normalized 2D coordinates.
+        """
+        super().__init__()
+        self.height = height
+        self.width = width
+        self.encoder = GaussianSplatPositionalEmbedding(
+            dim=d_model,
+            num_splats=num_splats,
+            coord_dim=2,
+            coord_range=coord_range,
+            sigma=sigma,
+            learnable_centers=learnable_centers,
+            learnable_sigma=learnable_sigma,
+            normalize=normalize,
+            use_mlp=use_mlp,
+        )
+        coords = self._build_coords()
+        self.register_buffer("coords", coords, persistent=False)
+
+    def _build_coords(self):
+        y = torch.linspace(-1.0, 1.0, self.height)
+        x = torch.linspace(-1.0, 1.0, self.width)
+        try:
+            yy, xx = torch.meshgrid(y, x, indexing="ij")
+        except TypeError:
+            yy, xx = torch.meshgrid(y, x)
+        return torch.stack([xx.flatten(), yy.flatten()], dim=-1)
+
+    def forward(self):
+        return self.encoder(self.coords[None, :, :]).squeeze(0)
+
+
+def build_2d_positional_embedding(d_model: int, height: int, width: int,
+                                  kind="sinusoidal", **kwargs):
+    if kind is None:
+        kind = "sinusoidal"
+    kind = kind.lower()
+    if kind in ["sinusoidal", "sincos", "sinusoidal_2d"]:
+        return SinusoidalPositionalEmbedding2D(d_model, height, width)
+    if kind in ["gaussian_splat", "gaussian", "splat"]:
+        return GaussianSplatPositionalEmbedding2D(d_model, height, width, **kwargs)
+    raise ValueError(f"Unknown 2D positional embedding kind: {kind}")
 
 
 class PatchEmbedding(nn.Module):
